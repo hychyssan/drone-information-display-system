@@ -22,13 +22,31 @@ public class SseController {
      */
     @GetMapping("/stream")
     public SseEmitter subscribeToMetadata() {
-        SseEmitter emitter = new SseEmitter(60_0000L); // 设置超时时间（例如6000秒）
+        SseEmitter emitter = new SseEmitter(60_000L); // 设置超时时间（例如6000秒）
         emitters.add(emitter);
 
         System.out.println("添加SSE连接");
 
-        emitter.onCompletion(() -> emitters.remove(emitter));
-        emitter.onTimeout(() -> emitters.remove(emitter));
+        //        emitter.onCompletion(() -> emitters.remove(emitter));
+        //        emitter.onTimeout(() -> emitters.remove(emitter));
+        // 在 subscribeToMetadata 方法中，增强回调逻辑
+        emitter.onCompletion(() -> {
+            System.out.println("SSE连接正常完成");
+            emitters.remove(emitter); // 从列表移除
+            emitter.complete(); // 显式标记完成，确保资源释放
+        });
+        emitter.onTimeout(() -> {
+            System.out.println("SSE连接超时");
+            emitters.remove(emitter);
+            emitter.complete();
+        });
+        // 添加onError回调是一个好习惯
+        emitter.onError((throwable) -> {
+            System.out.println("SSE连接发生错误: " + throwable.getMessage());
+            emitters.remove(emitter);
+            emitter.complete();
+        });
+
         System.out.println("SSE成功连接");
         return emitter;
     }

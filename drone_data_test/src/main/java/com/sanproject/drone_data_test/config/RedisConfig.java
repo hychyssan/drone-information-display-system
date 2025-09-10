@@ -1,4 +1,4 @@
-package com.sanproject.dronedatamanagement.config;
+package com.sanproject.drone_data_test.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
