@@ -11,10 +11,13 @@ type NormalizedImageMetadata = {
   confidence: number
 }
 
-const props = defineProps<{ reconnectIntervalMs?: number }>()
+const props = defineProps<{ reconnectIntervalMs?: number; minPushIntervalMs?: number }>()
 const reconnectIntervalMs = computed(() => props.reconnectIntervalMs ?? 5000)
+const minPushIntervalMs = computed(() => props.minPushIntervalMs ?? 500)
 
 const events = ref<NormalizedImageMetadata[]>([])
+// 节流：缓存最新一条待推送的数据
+const latestPending = ref<NormalizedImageMetadata | null>(null)
 const connectionState = ref<'connecting' | 'open' | 'closed'>('connecting')
 const lastUpdated = ref<Date | null>(null)
 const minConfidence = ref<number>(0)
@@ -63,13 +66,8 @@ function openSse() {
       const data = JSON.parse(evt.data) as IncomingImageMetadata
       const normalized = normalizeMetadata(data)
       if (!normalized) return
-      events.value = [normalized, ...events.value]
-      lastUpdated.value = new Date()
-      queueMicrotask(() => {
-        if (scrollContainer.value) {
-          scrollContainer.value.scrollTo({ top: 0, behavior: 'smooth' })
-        }
-      })
+      // 仅缓存最新一条，实际渲染由节流定时器控制
+      latestPending.value = normalized
     } catch (err) {
       // 忽略解析错误
     }
@@ -91,6 +89,33 @@ function scheduleReconnect() {
   }, reconnectIntervalMs.value)
 }
 
+// 将缓存的 latestPending 按最小间隔推送到 UI
+function flushPending() {
+  if (!latestPending.value) return
+  const item = latestPending.value
+  latestPending.value = null
+  events.value = [item, ...events.value]
+  lastUpdated.value = new Date()
+  queueMicrotask(() => {
+    if (scrollContainer.value) {
+      scrollContainer.value.scrollTo({ top: 0, behavior: 'smooth' })
+    }
+  })
+}
+
+let throttleTimer: number | null = null
+function startThrottleTimer() {
+  if (throttleTimer) return
+  throttleTimer = window.setInterval(() => {
+    flushPending()
+  }, minPushIntervalMs.value)
+}
+function stopThrottleTimer() {
+  if (!throttleTimer) return
+  window.clearInterval(throttleTimer)
+  throttleTimer = null
+}
+
 function manualRefresh() {
   // 关闭旧连接并清空数据后重连
   if (eventSourceRef.value) {
@@ -99,6 +124,7 @@ function manualRefresh() {
   }
   connectionState.value = 'connecting'
   events.value = []
+  latestPending.value = null
   openSse()
 }
 
@@ -121,11 +147,13 @@ const connectionLabel = computed(() => {
 
 onMounted(() => {
   openSse()
+  startThrottleTimer()
 })
 
 onBeforeUnmount(() => {
   if (eventSourceRef.value) eventSourceRef.value.close()
   if (reconnectTimer) window.clearTimeout(reconnectTimer)
+  stopThrottleTimer()
 })
 
 watch(reconnectIntervalMs, () => {
@@ -135,6 +163,12 @@ watch(reconnectIntervalMs, () => {
     reconnectTimer = null
   }
   if (connectionState.value === 'closed') scheduleReconnect()
+})
+
+watch(minPushIntervalMs, () => {
+  // 重启节流定时器以应用新的最小推送间隔
+  stopThrottleTimer()
+  startThrottleTimer()
 })
 </script>
 
