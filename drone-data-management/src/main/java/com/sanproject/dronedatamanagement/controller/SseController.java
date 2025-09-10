@@ -79,6 +79,7 @@ public class SseController {
                 System.out.println("发送失败，清理连接: " + entry.getKey());
                 emitter.complete();
                 iterator.remove(); // 从Map中移除
+                sendEventToClients(metadata); // 重新发送给其他连接
             }
         }
     }

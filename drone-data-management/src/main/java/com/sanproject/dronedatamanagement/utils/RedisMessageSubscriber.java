@@ -3,16 +3,36 @@ package com.sanproject.dronedatamanagement.utils;
 import com.sanproject.dronedatamanagement.controller.SseController;
 import com.sanproject.dronedatamanagement.dto.ImageMetadata;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.connection.Message;
+import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
 
 @Component
-public class RedisMessageSubscriber {
+public class RedisMessageSubscriber implements MessageListener {
 
     @Autowired
     private RedisTemplate<String, Object> redisTemplate;
+
+
+    /**
+     * 2. 重写onMessage方法，这是Spring收到Redis消息后的回调入口
+     */
+
+    @Override
+    public void onMessage(Message message, byte[] pattern) {
+        // 从Message对象中直接解析出消息内容，这通常是你在Redis中publish的字符串
+        String metadataKey = new String(message.getBody()); // 例如: "image_metadata:1757493783675"
+        String channel = new String(message.getChannel());
+
+        System.out.println("收到Redis消息，频道: " + channel + ", 内容: " + metadataKey);
+
+        // 3. 调用你现有的处理逻辑
+        handleMessage(metadataKey);
+    }
+
 
     /**
      * 处理收到的新图像元数据通知
