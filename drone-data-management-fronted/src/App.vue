@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import SseStream from './components/SseStream.vue'
+import Dashboard from './pages/Dashboard.vue'
 </script>
 
 <template>
@@ -10,7 +10,7 @@ import SseStream from './components/SseStream.vue'
         <div class="text-xs text-gray-500">SSE 实时流</div>
       </div>
     </header>
-    <SseStream />
+    <Dashboard />
   </main>
 </template>
 

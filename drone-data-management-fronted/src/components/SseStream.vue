@@ -9,11 +9,17 @@ type NormalizedImageMetadata = {
   width: number
   height: number
   confidence: number
+  peopleCount: number
 }
 
-const props = defineProps<{ reconnectIntervalMs?: number; minPushIntervalMs?: number }>()
+const props = defineProps<{ reconnectIntervalMs?: number; minPushIntervalMs?: number; maxItems?: number }>()
 const reconnectIntervalMs = computed(() => props.reconnectIntervalMs ?? 5000)
 const minPushIntervalMs = computed(() => props.minPushIntervalMs ?? 500)
+const maxItems = computed(() => Math.max(1, props.maxItems ?? 200))
+
+// 首次渲染控制：避免加载时闪屏（禁用初始过渡与滚动）
+const hasFirstRender = ref(false)
+const enableTransition = computed(() => hasFirstRender.value)
 
 const events = ref<NormalizedImageMetadata[]>([])
 // 节流：缓存最新一条待推送的数据
@@ -45,11 +51,12 @@ function normalizeMetadata(raw: IncomingImageMetadata): NormalizedImageMetadata 
   const width = toNumber(raw.width)
   const height = toNumber(raw.height)
   const confidence = toNumber(raw.confidence)
+  const peopleCount = toNumber(raw.peopleCount ?? raw['people_count'])
 
   if ([timestamp, centerX, centerY, width, height, confidence].some(v => Number.isNaN(v))) {
     return null
   }
-  return { timestamp, centerX, centerY, width, height, confidence }
+  return { timestamp, centerX, centerY, width, height, confidence, peopleCount: Number.isNaN(peopleCount) ? 0 : peopleCount }
 }
 
 function openSse() {
@@ -94,26 +101,41 @@ function flushPending() {
   if (!latestPending.value) return
   const item = latestPending.value
   latestPending.value = null
-  events.value = [item, ...events.value]
+  const next = [item, ...events.value]
+  if (next.length > maxItems.value) next.length = maxItems.value
+  events.value = next
   lastUpdated.value = new Date()
   queueMicrotask(() => {
-    if (scrollContainer.value) {
-      scrollContainer.value.scrollTo({ top: 0, behavior: 'smooth' })
+    // 首次渲染不滚动与不过渡，渲染完成后再开启
+    if (!hasFirstRender.value) {
+      hasFirstRender.value = true
+      return
     }
+    if (scrollContainer.value) scrollContainer.value.scrollTo({ top: 0, behavior: 'smooth' })
   })
 }
 
-let throttleTimer: number | null = null
-function startThrottleTimer() {
-  if (throttleTimer) return
-  throttleTimer = window.setInterval(() => {
+// 使用 rAF 做时间片调度，保证渲染更顺滑
+let rafId: number | null = null
+let lastFlushTs = 0
+function rafTick(ts: number) {
+  if (!lastFlushTs) lastFlushTs = ts
+  if (ts - lastFlushTs >= minPushIntervalMs.value) {
     flushPending()
-  }, minPushIntervalMs.value)
+    lastFlushTs = ts
+  }
+  rafId = window.requestAnimationFrame(rafTick)
+}
+function startThrottleTimer() {
+  if (rafId) return
+  lastFlushTs = 0
+  rafId = window.requestAnimationFrame(rafTick)
 }
 function stopThrottleTimer() {
-  if (!throttleTimer) return
-  window.clearInterval(throttleTimer)
-  throttleTimer = null
+  if (!rafId) return
+  window.cancelAnimationFrame(rafId)
+  rafId = null
+  lastFlushTs = 0
 }
 
 function manualRefresh() {
@@ -170,6 +192,12 @@ watch(minPushIntervalMs, () => {
   stopThrottleTimer()
   startThrottleTimer()
 })
+
+// 对外输出最新数据，便于其它组件（如视频）订阅
+const emit = defineEmits<{ (e: 'latest', data: NormalizedImageMetadata): void }>()
+watch(events, (list) => {
+  if (list.length > 0) emit('latest', list[0])
+}, { deep: false })
 </script>
 
 <template>
@@ -204,18 +232,49 @@ watch(minPushIntervalMs, () => {
       </div>
     </div>
 
-    <div class="mb-3 text-xs text-gray-500">
+    <div class="mb-3 flex items-center justify-between text-xs text-gray-600">
+      <div>
+        当前帧人数：
+        <span class="font-semibold text-gray-900 dark:text-gray-100">
+          {{ filteredEvents.length ? filteredEvents[0].peopleCount : 0 }}
+        </span>
+      </div>
       最后更新时间：
       <span v-if="lastUpdated">{{ lastUpdated.toLocaleString() }}</span>
       <span v-else>—</span>
     </div>
 
     <div ref="scrollContainer" class="grid gap-3 overflow-auto" style="max-height: 60vh">
-      <transition-group name="list" tag="div" class="grid gap-3">
+      <transition-group v-if="enableTransition" name="list" tag="div" class="grid gap-3">
         <div
           v-for="(item, idx) in filteredEvents"
           :key="`${item.timestamp}-${idx}`"
           class="rounded-lg border border-gray-200 bg-white shadow-sm transition hover:shadow-md dark:bg-gray-900 dark:border-gray-800"
+        >
+          <div class="flex items-center justify-between border-b border-gray-100 px-4 py-2 dark:border-gray-800">
+            <div class="text-sm font-medium text-gray-700 dark:text-gray-200">{{ formatTimestamp(item.timestamp) }}</div>
+            <div class="flex items-center gap-3 text-xs text-gray-500">
+              <span>人数：{{ item.peopleCount }}</span>
+              <span>置信度：{{ Number(item.confidence).toFixed(1) }}%</span>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-4 px-4 py-3 text-sm">
+            <div class="space-y-1">
+              <div class="text-gray-500">中心坐标</div>
+              <div class="font-medium">x={{ item.centerX.toFixed(1) }}, y={{ item.centerY.toFixed(1) }}</div>
+            </div>
+            <div class="space-y-1">
+              <div class="text-gray-500">框尺寸</div>
+              <div class="font-medium">w={{ item.width.toFixed(1) }}, h={{ item.height.toFixed(1) }}</div>
+            </div>
+          </div>
+        </div>
+      </transition-group>
+      <div v-else class="grid gap-3">
+        <div
+          v-for="(item, idx) in filteredEvents"
+          :key="`${item.timestamp}-${idx}`"
+          class="rounded-lg border border-gray-200 bg-white shadow-sm dark:bg-gray-900 dark:border-gray-800"
         >
           <div class="flex items-center justify-between border-b border-gray-100 px-4 py-2 dark:border-gray-800">
             <div class="text-sm font-medium text-gray-700 dark:text-gray-200">{{ formatTimestamp(item.timestamp) }}</div>
@@ -232,7 +291,7 @@ watch(minPushIntervalMs, () => {
             </div>
           </div>
         </div>
-      </transition-group>
+      </div>
     </div>
   </div>
 </template>

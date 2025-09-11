@@ -14,4 +14,5 @@ public class ImageMetadata {
     private double width;
     private double height;
     private double confidence;
+    private int peopleCount = 0;
 }
