@@ -7,7 +7,7 @@ import torch
 import redis
 import time
 import json
-import subprocess  # 新增：用于 FFmpeg 推流
+import subprocess
 from typing import Dict, Any, Optional, List
 from ultralytics import YOLO
 
@@ -17,16 +17,14 @@ class RedisDetectionPublisher:
         """
         初始化 Redis 连接（无密码）
         """
-        # 将空字符串或 "None" 视为无密码
         pwd = None if (password in ("", "None", None)) else password
-
         self.redis_client = redis.Redis(
             host=host,
             port=port,
             db=db,
-            password=pwd,                 # 无密码则为 None
-            decode_responses=True,        # 返回字符串
-            socket_timeout=5,             # 连接/读写超时
+            password=pwd,
+            decode_responses=True,
+            socket_timeout=5,
             retry_on_timeout=True,
         )
         try:
@@ -39,19 +37,17 @@ class RedisDetectionPublisher:
     def publish_detection_metadata(self, detections_data: List[Dict[str, Any]], frame_info: Dict[str, Any]) -> bool:
         """
         将每个目标检测结果写为一个 Redis Hash：
-        键名: image:metadata:updates:{timestamp_ms}
+        键名: image_metadata:{timestamp_ms}
         字段: timestamp, center_x, center_y, width, height, confidence(百分比)
+        频道: image:metadata:updates  消息内容: key 名
         """
         if not self.redis_client:
             return False
-
         try:
             base_ts_ms = int(time.time() * 1000)
-
             for idx, det in enumerate(detections_data):
-                ts_ms = base_ts_ms + idx  # 避免同毫秒冲突
+                ts_ms = base_ts_ms + idx
                 key = f"image_metadata:{ts_ms}"
-
                 data = {
                     "timestamp": ts_ms,
                     "center_x": float(det["center_x"]),
@@ -60,25 +56,19 @@ class RedisDetectionPublisher:
                     "height": float(det["height"]),
                     "confidence": round(float(det["confidence"]) * 100.0, 2),
                 }
-
                 self.redis_client.hset(key, mapping=data)
-                self.redis_client.expire(key, 3600)  # 1小时过期
-                # 轻量通知
-                self.redis_client.publish(
-                    "image:metadata:updates",
-                    f"{key}"
-                )
+                self.redis_client.expire(key, 3600)
+                self.redis_client.publish("image:metadata:updates", f"{key}")
             if len(detections_data) > 0:
                 print(f"📤 已写入 Redis Hash {len(detections_data)} 个: image:metadata:updates")
             return True
-
         except Exception as e:
             print(f"❌ Redis发布失败: {e}")
             return False
 
     def get_detection_stats(self) -> Dict[str, int]:
         """
-        获取当前 image:metadata:updates 键的数量统计
+        获取统计（按你原逻辑保留）
         """
         try:
             keys = self.redis_client.keys("image:metadata:")
@@ -88,70 +78,119 @@ class RedisDetectionPublisher:
             return {}
 
 
-# 新增：RTMP 推流器（默认开启，无需命令行参数）
 class RtmpStreamer:
-    def __init__(self, rtmp_url: str = 'rtmp://124.71.162.119:1935/live/stream', fps: int = 30):
-        self.rtmp_url = rtmp_url
-        self.fps = int(fps)
-        self.proc: Optional[subprocess.Popen] = None
-        self.w = None
-        self.h = None
+    """
+    RTMP 推流器（默认开启）
+    - 统一转码为 1280x720 @ 25fps
+    - 码率控制：平均 2300k，峰值 2500k，缓冲 5000k
+    - 无音频 (-an)
+    - 若需要更低带宽，可改为注释中的 540p 配置
+    """
+    TARGET_W = 1280
+    TARGET_H = 720
+    FPS = 25
+    BITRATE_K = 2300
+    MAXRATE_K = 2500
+    BUFSIZE_K = 5000
 
-    def start(self, width: int, height: int):
-        if self.proc is not None:
+    # 低带宽（可替换上面参数）：
+    # TARGET_W = 960
+    # TARGET_H = 540
+    # FPS = 25
+    # BITRATE_K = 1600
+    # MAXRATE_K = 1800
+    # BUFSIZE_K = 3600
+
+    def __init__(self, rtmp_url: str = 'rtmp://124.71.162.119:1935/live/stream'):
+        self.rtmp_url = rtmp_url
+        self.proc: Optional[subprocess.Popen] = None
+        self.started = False
+        self.restart_attempted = False  # 简单防抖
+
+    def start(self):
+        if self.started:
             return
-        self.w, self.h = int(width), int(height)
         cmd = [
             "ffmpeg",
             "-loglevel", "error",
             "-f", "rawvideo",
             "-pix_fmt", "bgr24",
-            "-s", f"{self.w}x{self.h}",
-            "-r", str(self.fps),
+            "-s", f"{self.TARGET_W}x{self.TARGET_H}",
+            "-r", str(self.FPS),
             "-i", "-",
             "-c:v", "libx264",
             "-preset", "veryfast",
             "-tune", "zerolatency",
-            "-pix_fmt", "yuv420p",
-            "-g", str(self.fps * 2),
+            "-profile:v", "main",
+            "-level", "3.1",
+            "-g", str(self.FPS * 2),
+            "-keyint_min", str(self.FPS * 2),
+            "-sc_threshold", "0",
+            "-b:v", f"{self.BITRATE_K}k",
+            "-maxrate", f"{self.MAXRATE_K}k",
+            "-bufsize", f"{self.BUFSIZE_K}k",
+            "-an",
             "-f", "flv",
             self.rtmp_url
         ]
         try:
             self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-            print(f"📺 RTMP 推流已启动 -> {self.rtmp_url} ({self.w}x{self.h}@{self.fps}fps)")
+            self.started = True
+            print(f"📺 RTMP 推流开始: {self.rtmp_url} {self.TARGET_W}x{self.TARGET_H}@{self.FPS} "
+                  f"{self.BITRATE_K}k(max {self.MAXRATE_K}k)")
         except Exception as e:
             self.proc = None
-            print(f"❌ 无法启动 FFmpeg 推流：{e}")
+            print(f"❌ 启动 FFmpeg 失败: {e}")
 
     def write(self, frame):
-        if self.proc is None or self.proc.stdin is None:
+        if not self.started or self.proc is None or self.proc.stdin is None:
+            # 若进程挂了，尝试一次重启
+            if not self.restart_attempted:
+                print("⚠️ 推流进程不存在，尝试重启一次...")
+                self.restart_attempted = True
+                self.start()
             return
+
+        # 如果 FFmpeg 已退出
+        if self.proc.poll() is not None:
+            if not self.restart_attempted:
+                print("⚠️ 推流进程已退出，尝试重启一次...")
+                self.restart_attempted = True
+                self.close()
+                self.start()
+            return
+
         try:
-            if frame.shape[1] != self.w or frame.shape[0] != self.h:
-                frame = cv2.resize(frame, (self.w, self.h))
+            if frame.shape[1] != self.TARGET_W or frame.shape[0] != self.TARGET_H:
+                frame = cv2.resize(frame, (self.TARGET_W, self.TARGET_H))
             self.proc.stdin.write(frame.tobytes())
         except (BrokenPipeError, OSError) as e:
-            print(f"⚠️ 推流中断：{e}")
+            print(f"⚠️ 推流中断: {e}")
             self.close()
 
     def close(self):
         if self.proc:
             try:
                 if self.proc.stdin:
-                    self.proc.stdin.close()
+                    try:
+                        self.proc.stdin.close()
+                    except Exception:
+                        pass
                 self.proc.terminate()
-                self.proc.wait(timeout=2)
+                try:
+                    self.proc.wait(timeout=2)
+                except Exception:
+                    self.proc.kill()
             except Exception:
                 pass
             finally:
                 self.proc = None
+                self.started = False
                 print("⏹️ RTMP 推流已停止")
 
 
 def parse_arguments():
-    """解析命令行参数（默认指向公网 Redis，无密码）"""
-    parser = argparse.ArgumentParser(description='YOLO 实时检测（集成 Redis，image:metadata:updates 结构）')
+    parser = argparse.ArgumentParser(description='YOLO 实时检测（Redis + RTMP 推流）')
     parser.add_argument('--model', type=str, default='yolov8m.pt', help='模型路径')
     parser.add_argument('--source', type=str, default='DJI_20250308135111_0001_S.MP4', help='输入源（文件路径或摄像头索引）')
     parser.add_argument('--conf', type=float, default=0.5, help='置信度阈值')
@@ -159,22 +198,17 @@ def parse_arguments():
     parser.add_argument('--device', type=str, default='cuda:0', help='计算设备，如 cuda:0 / cpu / auto')
     parser.add_argument('--imgsz', type=int, nargs='+', default=[1280, 720], help='输入图像尺寸')
 
-    # Redis 默认改为公网地址，且无密码
+    # Redis
     parser.add_argument('--redis-host', type=str, default='124.71.162.119', help='Redis服务器地址（公网）')
     parser.add_argument('--redis-port', type=int, default=6379, help='Redis端口')
     parser.add_argument('--redis-db', type=int, default=0, help='Redis数据库编号')
     parser.add_argument('--redis-password', type=str, default=None, help='Redis密码（留空/None 表示无密码）')
     parser.add_argument('--disable-redis', action='store_true', help='禁用Redis功能')
-
     return parser.parse_args()
 
 
 def extract_detections_from_result(result) -> List[Dict[str, Any]]:
-    """
-    从 YOLO 结果中提取检测数据（中心点、宽高、置信度）
-    """
     detections: List[Dict[str, Any]] = []
-
     if result.boxes is not None:
         boxes = result.boxes.cpu().numpy()
         for box in boxes:
@@ -185,7 +219,6 @@ def extract_detections_from_result(result) -> List[Dict[str, Any]]:
             height = float(y2 - y1)
             confidence = float(getattr(box, "conf", [0.0])[0])
             class_id = int(getattr(box, "cls", [-1])[0])
-
             detections.append({
                 "center_x": center_x,
                 "center_y": center_y,
@@ -195,13 +228,11 @@ def extract_detections_from_result(result) -> List[Dict[str, Any]]:
                 "class_id": class_id,
                 "bbox_x1": x1, "bbox_y1": y1, "bbox_x2": x2, "bbox_y2": y2,
             })
-
     return detections
 
 
 def main():
     args = parse_arguments()
-
     device = 'cuda:0' if (args.device == 'auto' and torch.cuda.is_available()) else args.device
     print(f"🚀 使用设备: {device.upper()}")
 
@@ -211,11 +242,10 @@ def main():
             host=args.redis_host,
             port=args.redis_port,
             db=args.redis_db,
-            password=args.redis_password,  # 无密码时传 None 或空字符串
+            password=args.redis_password,
         )
 
-    # 新增：RTMP 推流（默认开启）
-    rtmp_streamer = RtmpStreamer()  # 默认地址 rtmp://124.71.162.119:1935/live/stream, fps=30
+    rtmp_streamer = RtmpStreamer()  # 默认开启推流
 
     model = YOLO(args.model).to(device)
     print(f"✅ 已加载模型: {args.model}")
@@ -242,7 +272,6 @@ def main():
             device=device
         ):
             frame_count += 1
-
             orig_frame = result.orig_img
             annotated_frame = result.plot()
 
@@ -257,19 +286,18 @@ def main():
                 }
                 redis_publisher.publish_detection_metadata(detections_data, frame_info)
 
-            # 新增：推送处理后的帧到 RTMP（默认开启）
-            if rtmp_streamer.proc is None:
-                h, w = annotated_frame.shape[:2]
-                rtmp_streamer.start(w, h)
+            if not rtmp_streamer.started:
+                rtmp_streamer.start()
             rtmp_streamer.write(annotated_frame)
 
-            elapsed_time = time.time() - start_time
-            fps = frame_count / elapsed_time if elapsed_time > 0 else 0.0
+            elapsed = time.time() - start_time
+            fps = frame_count / elapsed if elapsed > 0 else 0.0
             stats_text = [
                 f"FPS: {fps:.1f}",
                 f"Frames: {frame_count}",
                 f"Detections: {detection_count}",
-                f"Redis: {'ON' if redis_publisher and redis_publisher.redis_client else 'OFF'}"
+                f"Redis: {'ON' if redis_publisher and redis_publisher.redis_client else 'OFF'}",
+                f"RTMP: ON {RtmpStreamer.TARGET_W}x{RtmpStreamer.TARGET_H}@{RtmpStreamer.FPS}"
             ]
             y0 = 30
             for i, txt in enumerate(stats_text):
@@ -279,26 +307,25 @@ def main():
             combined = cv2.hconcat([orig_frame, annotated_frame])
             h, w = combined.shape[:2]
             display_frame = cv2.resize(combined, (w // 2, h // 2))
-            cv2.imshow('YOLOv8检测 + Redis(image:metadata:updates) - 按ESC退出', display_frame)
+            cv2.imshow('YOLOv8检测 + Redis + RTMP推流(压缩) - ESC退出', display_frame)
 
             if cv2.waitKey(1) == 27:
                 break
     finally:
         cv2.destroyAllWindows()
-        # 新增：退出时关闭 RTMP 推流
         rtmp_streamer.close()
 
     total_time = time.time() - start_time
     avg_fps = frame_count / total_time if total_time > 0 else 0.0
     print("\n🏁 检测完成:")
-    print(f"   总帧数: {frame_count}")
-    print(f"   总检测数: {detection_count}")
-    print(f"   平均FPS: {avg_fps:.1f}")
-    print(f"   总耗时: {total_time:.1f}秒")
+    print(f"  总帧数: {frame_count}")
+    print(f"  总检测数: {detection_count}")
+    print(f"  平均FPS: {avg_fps:.1f}")
+    print(f"  总耗时: {total_time:.1f}秒")
     if redis_publisher:
-        final_stats = redis_publisher.get_detection_stats()
-        if final_stats:
-            print(f"   Redis数据: {final_stats}")
+        stats = redis_publisher.get_detection_stats()
+        if stats:
+            print(f"  Redis数据: {stats}")
 
 
 if __name__ == "__main__":
