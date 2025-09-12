@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, computed, watch } from 'vue'
+import { useTelemetryStore } from '@/stores/telemetry'
 
 type IncomingImageMetadata = Record<string, unknown>
 type NormalizedImageMetadata = {
@@ -113,6 +114,10 @@ function flushPending() {
   lastUpdated.value = new Date()
   // 更新当前帧人数
   currentPeopleCount.value = item.peopleCount
+  // 记录帧到 telemetry
+  // 将置信度标准化为百分比 0-100
+  const confidencePercent = item.confidence > 1 ? item.confidence : item.confidence * 100
+  useTelemetryStore().addFrame({ timestamp: item.timestamp, peopleCount: item.peopleCount, confidence: confidencePercent })
   queueMicrotask(() => {
     // 首次渲染不滚动与不过渡，渲染完成后再开启
     if (!hasFirstRender.value) {
@@ -185,6 +190,7 @@ onMounted(() => {
       const now = Date.now()
       if (now - lastReceiveMs > 1000 && currentPeopleCount.value !== 0) {
         currentPeopleCount.value = 0
+        useTelemetryStore().addFrame({ timestamp: now, peopleCount: 0, confidence: 0 })
       }
     }, 250)
   }
