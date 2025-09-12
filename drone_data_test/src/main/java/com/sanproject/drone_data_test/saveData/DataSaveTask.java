@@ -19,7 +19,7 @@ public class DataSaveTask {
 
     String key = "image_metadata";
     //定时模拟将图像数据存储到redis中
-    @Scheduled(fixedRate = 3000)
+    @Scheduled(fixedRate = 500)
     public void save(){
         ImageMetadata imageMetadata = new ImageMetadata();
         String currentTime = System.currentTimeMillis() + "";
@@ -27,11 +27,14 @@ public class DataSaveTask {
 
         System.out.println("开始存储数据");
 
+        Double confidence = Math.random() * 60 + 40;
+
+
         imageMetadata.setCenterX(10.0);
         imageMetadata.setCenterY(20.0);
         imageMetadata.setWidth(400.0);
         imageMetadata.setHeight(300.0);
-        imageMetadata.setConfidence(95.0);
+        imageMetadata.setConfidence(confidence);
         imageMetadata.setTimestamp(System.currentTimeMillis());
 
         //存储数据

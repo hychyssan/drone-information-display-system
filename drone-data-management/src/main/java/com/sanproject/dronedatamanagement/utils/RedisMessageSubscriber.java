@@ -2,6 +2,7 @@ package com.sanproject.dronedatamanagement.utils;
 
 import com.sanproject.dronedatamanagement.controller.SseController;
 import com.sanproject.dronedatamanagement.dto.ImageMetadata;
+import com.sanproject.dronedatamanagement.service.SseService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.connection.Message;
 import org.springframework.data.redis.connection.MessageListener;
@@ -15,6 +16,9 @@ public class RedisMessageSubscriber implements MessageListener {
 
     @Autowired
     private RedisTemplate<String, Object> redisTemplate;
+
+    @Autowired
+    private SseService sseService;
 
 
     /**
@@ -60,6 +64,8 @@ public class RedisMessageSubscriber implements MessageListener {
             metadata.setWidth(Double.parseDouble(metaDataMap.get("width").toString()));
             metadata.setHeight(Double.parseDouble(metaDataMap.get("height").toString()));
             metadata.setConfidence(Double.parseDouble(metaDataMap.get("confidence").toString()));
+            //计算当前帧人数
+            metadata.setPeopleCount(sseService.countPeople((long) (metadata.getTimestamp())));
         } catch (Exception e) {
             System.out.println("错误的metadata为：" + metadata.toString());
             System.out.println("metadatakey为：" + metadataKey);

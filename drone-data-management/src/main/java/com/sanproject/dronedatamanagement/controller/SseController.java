@@ -29,7 +29,7 @@ public class SseController {
         String connectionId = UUID.randomUUID().toString();
         SseEmitter emitter = new SseEmitter(300_000L); // 设置超时时间（例如6000秒）
 
-        emitters.put(connectionId, emitter);    //注册新连接
+        emitters.put(connectionId, emitter); // 注册新连接
         System.out.println("SSE连接已建立, ID: " + connectionId + ", 当前连接数: " + emitters.size());
 
         // 设置心跳
