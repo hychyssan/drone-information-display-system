@@ -22,13 +22,18 @@ const hasFirstRender = ref(false)
 const enableTransition = computed(() => hasFirstRender.value)
 
 const events = ref<NormalizedImageMetadata[]>([])
-// 节流：缓存最新一条待推送的数据
+// 节流：缓存最新一条待推送的数据image.png
 const latestPending = ref<NormalizedImageMetadata | null>(null)
 const connectionState = ref<'connecting' | 'open' | 'closed'>('connecting')
 const lastUpdated = ref<Date | null>(null)
 const minConfidence = ref<number>(0)
 const eventSourceRef = ref<EventSource | null>(null)
 const scrollContainer = ref<HTMLDivElement | null>(null)
+
+// 当前帧人数与最近一次接收时间（用于超时清零）
+const currentPeopleCount = ref<number>(0)
+let lastReceiveMs = 0
+let inactivityTimer: number | null = null
 
 const filteredEvents = computed(() => {
   return events.value.filter(e => e.confidence >= minConfidence.value)
@@ -75,6 +80,7 @@ function openSse() {
       if (!normalized) return
       // 仅缓存最新一条，实际渲染由节流定时器控制
       latestPending.value = normalized
+      lastReceiveMs = Date.now()
     } catch (err) {
       // 忽略解析错误
     }
@@ -105,6 +111,8 @@ function flushPending() {
   if (next.length > maxItems.value) next.length = maxItems.value
   events.value = next
   lastUpdated.value = new Date()
+  // 更新当前帧人数
+  currentPeopleCount.value = item.peopleCount
   queueMicrotask(() => {
     // 首次渲染不滚动与不过渡，渲染完成后再开启
     if (!hasFirstRender.value) {
@@ -170,12 +178,26 @@ const connectionLabel = computed(() => {
 onMounted(() => {
   openSse()
   startThrottleTimer()
+  // 启动超时检测：超过1秒未收到新数据则置零
+  if (!inactivityTimer) {
+    inactivityTimer = window.setInterval(() => {
+      if (!lastReceiveMs) return
+      const now = Date.now()
+      if (now - lastReceiveMs > 1000 && currentPeopleCount.value !== 0) {
+        currentPeopleCount.value = 0
+      }
+    }, 250)
+  }
 })
 
 onBeforeUnmount(() => {
   if (eventSourceRef.value) eventSourceRef.value.close()
   if (reconnectTimer) window.clearTimeout(reconnectTimer)
   stopThrottleTimer()
+  if (inactivityTimer) {
+    window.clearInterval(inactivityTimer)
+    inactivityTimer = null
+  }
 })
 
 watch(reconnectIntervalMs, () => {
@@ -236,7 +258,7 @@ watch(events, (list) => {
       <div>
         当前帧人数：
         <span class="font-semibold text-gray-900 dark:text-gray-100">
-          {{ filteredEvents.length ? filteredEvents[0].peopleCount : 0 }}
+          {{ currentPeopleCount }}
         </span>
       </div>
       最后更新时间：

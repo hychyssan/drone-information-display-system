@@ -33,12 +33,38 @@ function attach() {
   if (!video) return
   if (canUseNativeHls.value) {
     video.src = props.src
+    // 对部分浏览器，清单就绪后不会自动播放，尝试触发
+    video.play?.().catch(() => {/* 忽略自动播放被阻止 */})
     return
   }
   if (Hls.isSupported()) {
-    hls = new Hls({ enableWorker: true })
+    hls = new Hls({
+      enableWorker: true,
+      lowLatencyMode: true,
+      liveSyncDurationCount: 3,
+      backBufferLength: 30,
+      maxBufferLength: 10,
+      fragLoadingTimeOut: 15000,
+      manifestLoadingTimeOut: 15000,
+      // 对部分 CDN 缓存场景，禁用缓存
+      ajaxSetup: (ctx) => { ctx.headers = { ...(ctx.headers || {}), 'Cache-Control': 'no-cache' } },
+    })
     hls.loadSource(props.src)
     hls.attachMedia(video)
+    hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+      // 媒体已附加，尝试开始加载
+      hls?.startLoad()
+    })
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      // 清单解析完成，尝试播放
+      video.play?.().catch(() => {/* 忽略自动播放被阻止 */})
+    })
+    hls.on(Hls.Events.LEVEL_UPDATED, () => {
+      // 直播级别更新，确保不因暂停而卡帧
+      if (video.paused) {
+        video.play?.().catch(() => {/* 忽略自动播放被阻止 */})
+      }
+    })
     hls.on(Hls.Events.ERROR, (_evt, data) => {
       if (data.fatal && hls) {
         switch (data.type) {
@@ -80,14 +106,15 @@ watch(() => props.src, () => {
 </script>
 
 <template>
-  <div class="relative w-full overflow-hidden rounded-lg border border-gray-200 bg-black dark:border-gray-800">
+  <div class="relative w-full overflow-hidden rounded-lg border border-gray-200 bg-black dark:border-gray-800 self-start" style="height: 420px;">
     <video
       ref="videoRef"
       :autoplay="props.autoplay ?? true"
       :muted="props.muted ?? true"
       :controls="props.controls ?? true"
+      crossorigin="anonymous"
       playsinline
-      class="block h-[360px] w-full bg-black object-contain sm:h-[420px]"
+      class="block h-full w-full bg-black object-contain"
     ></video>
 
     <div v-if="overlay" class="pointer-events-none absolute inset-0 select-none">

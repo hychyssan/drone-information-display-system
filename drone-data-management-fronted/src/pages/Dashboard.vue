@@ -23,7 +23,7 @@ const HLS_SRC = 'http://124.71.162.119:8081/hls/stream.m3u8'
 
 <template>
   <div class="mx-auto max-w-6xl p-4">
-    <div class="grid gap-4 lg:grid-cols-2">
+    <div class="grid gap-4 lg:grid-cols-2 items-start">
       <VideoPlayer :src="HLS_SRC" :overlay="latest" />
       <SseStream @latest="handleLatest" />
     </div>

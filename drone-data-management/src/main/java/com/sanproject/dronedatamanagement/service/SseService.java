@@ -27,7 +27,7 @@ public class SseService {
             //赋值上一帧总人数
             lastFramePeopleNumber.set(currentFrameCount.get());
             //本帧人数清零
-            currentFrameCount.set(0);
+            currentFrameCount.set(1);
         }
         preTimeStamp = curTimeStamp;
         return lastFramePeopleNumber.get();
